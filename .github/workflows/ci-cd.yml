@@ -1,0 +1,82 @@
+name: "Terraform CI/CD"
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      vpc: ${{ steps.changes.outputs.vpc }}
+      kube: ${{ steps.changes.outputs.kube }}
+      kube_addons: ${{ steps.changes.outputs.kube_addons }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            backend: 'backend/*'
+            vpc: 'vpc/*'
+            kube: 'kube/*'
+            kube_addons: 'kube/addons/*'
+
+  backend:
+    needs: [changes]
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: backend
+      nochange: ${{ needs.changes.outputs.backend == 'false' }}
+      allow_tf: 'true'
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL_DYNAMODB: ${{ secrets.AWS_ENDPOINT_URL_DYNAMODB }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+
+  vpc:
+    needs: [changes, backend]
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: vpc
+      #true true
+      nochange: ${{ needs.changes.outputs.vpc == 'false' }}
+      allow_tf: ${{ needs.backend.outputs.nochange == 'true' }}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL_DYNAMODB: ${{ secrets.AWS_ENDPOINT_URL_DYNAMODB }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+
+  kube:
+    needs: [changes, backend, vpc]
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: kube
+      #false true = false
+      nochange: ${{ needs.changes.outputs.kube == 'false' }}
+      allow_tf: ${{ needs.vpc.outputs.nochange == 'true' }}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL_DYNAMODB: ${{ secrets.AWS_ENDPOINT_URL_DYNAMODB }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+
+  kube_addons:
+    needs: [changes, backend, vpc, kube]
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: kube/addons
+      #false false => false
+      nochange: ${{ needs.changes.outputs.kube_addons == 'false' }}
+      allow_tf: ${{ needs.kube.outputs.nochange == 'true' }}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL_DYNAMODB: ${{ secrets.AWS_ENDPOINT_URL_DYNAMODB }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}

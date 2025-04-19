@@ -28,6 +28,7 @@ terraform {
       source = "gavinbunney/kubectl"
     }
   }
+
   required_version = ">= 0.13"
 }
 

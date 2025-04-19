@@ -1,0 +1,175 @@
+name: "Terraform"
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: 'custom git dir'
+        required: true
+        type: string
+      nochange:
+        description: 'not changed files in pr'
+        required: true
+        type: string
+      allow_tf:
+        description: 'allow terraform calls'
+        required: false
+        type: string
+      main-branch:
+        description: 'main tree of git'
+        required: false
+        default: 'refs/heads/master'
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        description: 'access for aws like infra'
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        description: 'access for aws like infra'
+        required: true
+      AWS_ENDPOINT_URL_DYNAMODB:
+        description: 'access for aws like infra'
+        required: false
+      YC_TOKEN:
+        description: 'access for aws like infra'
+        required: false
+    outputs:
+      nochange:
+        description: "no changes plan or applied"
+        value: ${{ jobs.terraform.outputs.nochange }}
+      applied:
+        description: "plan applied"
+        value: ${{ jobs.terraform.outputs.applied }}
+jobs:
+  # conditions:
+  #   name: "conditions"
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Skipped
+  #       run: "echo 'Skipped' ${{ inputs.nochange }} and ${{ inputs.allow_tf }}"
+
+  terraform:
+    if: inputs.allow_tf == 'true'
+    name: "Terraform"
+    runs-on: ubuntu-latest
+    outputs:
+      applied: ${{ steps.apply.outcome == 'success' }}
+      nochange: ${{ steps.nochange.outcome == 'success' }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL_DYNAMODB: ${{ secrets.AWS_ENDPOINT_URL_DYNAMODB }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: true
+
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform plan -input=false -no-color -out=plan.tmp
+          terraform show -no-color plan.tmp >${GITHUB_WORKSPACE}/plan.out
+        continue-on-error: true
+        
+      - run: echo "${{ steps.plan.outcome }} ${{ steps.plan.outputs.exitcode }}"
+
+      - name: plan reqchange
+        id: plan_reqchange
+      #  if: ${{ steps.plan.outcome == 'skipped' || steps.plan.outputs.exitcode == '2' }}
+        if: ${{ steps.plan.outcome == 'skipped' ||
+                (
+                  steps.plan.outcome == 'success' &&
+                  contains(steps.plan.outputs.stdout, 'No changes. Your infrastructure matches the configuration.') != true
+                ) }}
+        run: "echo plan skipped or req changes"
+
+      - name: Terraform Apply
+        id: apply
+        if: ${{ steps.plan_reqchange.outcome == 'success' &&
+                (
+                  ( github.ref == inputs.main-branch && github.event_name == 'push' ) ||
+                  inputs.nochange == 'true'
+                ) }}
+        run: terraform apply -auto-approve -no-color -input=false
+        continue-on-error: true
+
+      - uses: actions/github-script@v7
+        id: state
+        #Plan: 19 to add, 0 to change, 0 to destroy.
+        #env:
+        #  PLAN: "terraform\n${{ steps.plan.outputs.stdout }}${{ steps.apply.outputs.stdout }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const run_url = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID
+            const run_link = '<a href="' + run_url + '">Actions</a>.'
+            const fs = require('fs')
+            const plan_file = fs.readFileSync('plan.out', 'utf8')
+            const plan = plan_file.length > 65000 ? plan_file.toString().substring(0, 65000) + " ..." : plan_file
+            const truncated_message = plan_file.length > 65000 ? "Output is too long and was truncated. You can read full Plan in " + run_link + "<br /><br />" : ""
+            
+            const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+            #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
+            #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+            #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+            #### Terraform Plan Request Change 📖\`${{ steps.plan_reqchange.outcome }}\`
+            #### Terraform Apply 📖\`${{ steps.apply.outcome }}\`
+            
+            <details><summary>Show Details</summary>
+            
+            \`\`\`terraform
+            
+            ${plan}
+            
+            \`\`\`
+            
+            </details>
+            ${truncated_message}
+            Results for commit: ${{ github.event.pull_request.head.sha }}
+
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Working Directory: \`${{ inputs.working-directory }}\`, Workflow: \`${{ github.workflow }}\`*`;
+              
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+      - name: No changes
+        id: nochange
+        if: ${{ steps.apply.outcome == 'success' ||
+                (
+                  steps.plan.outcome == 'skipped' ||
+                  (
+                    steps.plan.outcome == 'success' &&
+                    contains(steps.plan.outputs.stdout, 'No changes. Your infrastructure matches the configuration.')
+                  )
+                ) }}
+        #if: ${{ steps.apply.outcome == 'success' || steps.plan.outcome == 'skipped' || steps.plan.outputs.exitcode == '0' }}
+        run: "echo apply: ${{ steps.apply.outcome }}, plan: ${{ steps.plan.outcome }}"
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure' || steps.apply.outcome == 'failure'
+        run: exit 1

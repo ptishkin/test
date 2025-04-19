@@ -1,22 +1,28 @@
-name: "Terraform CI/CD Backend"
+name: "Terraform CI/CD kube"
 
 on:
   push:
     branches:
       - master
     paths:
-      - 'backend/**'
+      - 'kube/**'
   pull_request:
     branches:
       - master
     paths:
-      - 'backend/**'
+      - 'kube/**'
+
+  workflow_run:
+    workflows: ['Terraform CI/CD VPC']
+    types:
+      - completed
+    branches: [master]
 
 jobs:
-  terraform:
+  kube:
     uses: ./.github/workflows/terraform.yml
     with:
-      working-directory: backend
+      working-directory: kube
     secrets:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
